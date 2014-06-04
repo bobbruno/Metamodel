@@ -1,0 +1,652 @@
+#ifndef ORA_PROC
+#include <process.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#endif
+#include <errno.h>
+
+#include <sqlca.h>
+#include <oraca.h>
+#include "dw_aux.h"
+EXEC ORACLE OPTION (ORACA=YES);
+
+char username[30], password[30], dbname[30];
+T_DATE Fc_Inic_Proc;
+
+extern char **environ;
+
+/*****************************************
+   Cierra_DW: Cierre de la aplicacion del mantenimiento del DW.
+
+      Marca todos los indicadores como actualizados, pone el Data Warehouse en estado
+      idle (-) y prepara la fecha inicial para el proximo calculo.
+ *****************************************/
+void Cierra_DW(int tudo)
+{
+   T_DATE Fc_Dt_Recz;
+   short  In_Dt_Recz;
+
+   EXEC SQL whenever SQLERROR do sql_error("Oracle error");
+   if (tudo) {
+      /* Seteando fecha de ultima atualizacion de los indicadores */
+      EXEC SQL update G3_INDCA_PERFM
+ 	    set CD_INDCA_ATUAL = '0'
+	    where CD_INDCA_ATUAL = '1';
+	    
+      /* Ajustando ultima fecha de generacion */
+
+      /* Hay algun dato rechazado que tendra que ser reprocesado ? */
+      EXEC SQL 
+         select min(FC_GEN_FUENTE_INDCA_PERFM)
+            into :Fc_Dt_Recz:In_Dt_Recz
+            from G3_EXTRT_SIG_DATO;
+
+      /* No, procesar a partir del ultimo procesamiento */
+      if (In_Dt_Recz == -1) {
+         EXEC SQL
+            update G3_PARM_SIST
+			   set TX_VL_PARM_SIST = :Fc_Inic_Proc
+               where NU_PARM_SIST = 2;
+      }
+      else {  /* Si, reprocesarlos en el proximo procesamiento */
+         EXEC SQL
+            update G3_PARM_SIST
+			   set TX_VL_PARM_SIST = :Fc_Dt_Recz
+               where NU_PARM_SIST = 2;
+      }
+   }
+
+   /* Ponendo el Warehouse en estado Idle */
+   EXEC SQL
+      update G3_PARM_SIST
+	     set TX_VL_PARM_SIST = '-'
+         where NU_PARM_SIST = 1;
+   EXEC SQL commit;
+}
+
+/**********************************
+  Crea_Flags_DM: Crea los registro de control que informan a los Data Marts cuales son
+	los nuevos lotes de informacion que deben procesar.
+ **********************************/
+void Crea_Flags_DM()
+{
+   int Fuente;
+   int Indca, Vision;
+   char Grnl[2];
+   T_DATE FcIndca, FcGen, FcRefr;
+
+   EXEC SQL whenever SQLERROR do sql_error("Oracle error");
+   EXEC SQL declare c_Indca cursor for
+     select NU_INDCA_PERFM, NU_VISION, CD_GRNL_INDCA_PERFM, FC_ULT_ATUAL_INDCA
+        from G3_INDCA_PERFM
+        where CD_INDCA_ATUAL = '1';
+
+   EXEC SQL open c_Indca;
+   EXEC SQL whenever NOTFOUND do break;
+   for (;;) {
+      EXEC SQL fetch c_Indca into :Indca, :Vision, :Grnl, :FcIndca;
+
+      EXEC SQL whenever NOTFOUND do sql_error("Oracle error");
+      EXEC SQL declare c_Fuente CURSOR FOR 
+         select distinct s.NU_FUENTE_INDCA_PERFM, s.FC_GEN_FUENTE_INDCA_PERFM,
+                s.FC_REFR_SERIE_HIST
+            from V_SERIE_HIST s
+            where s.NU_INDCA_PERFM = :Indca and
+                  s.NU_VISION = :Vision and
+                  s.CD_GRNL_SERIE_HIST = :Grnl and
+                  s.FC_GEN_FUENTE_INDCA_PERFM >= :FcIndca;
+      EXEC SQL open c_Fuente;
+
+      EXEC SQL whenever NOTFOUND do break;
+      for (;;) {
+         EXEC SQL fetch c_Fuente into :Fuente, :FcGen, :FcRefr;
+
+         EXEC SQL whenever SQLERROR do sql_error("Oracle error");
+         EXEC SQL whenever NOTFOUND do sql_error("Oracle error");
+
+	     /* Insere_Log_Proc_Server(Fuente, FcGen, FcRefr); */
+      }
+      EXEC SQL close c_Fuente;
+   }
+   EXEC SQL close c_Indca;
+}
+
+static char User_Name[60], PassWord[60];
+void dispara_anterior(char *nombre)
+{
+   char comando[128];
+
+   printf("Iniciando calculo de procesos anteriores a %s\n", nombre);
+   sprintf(comando, "%s\\jobs\\ant%s.bat", getenv("WAREHOME"), nombre);
+   fflush(stdout);
+   sprintf(User_Name, "USERNAME=%s", username);
+   _putenv(User_Name);
+   sprintf(PassWord, "PASSWORD=%s", password);
+   _putenv(PassWord);
+   if (_spawnlp(_P_WAIT, comando, comando, NULL) &&
+       (errno != ENOENT) && (errno != EINVAL)) {
+      printf("Error %d en pre%s.bat!\n", errno, nombre);
+      exit(1);
+   }
+}
+
+void dispara_paralelo(char *nombre)
+{
+   char comando[128];
+
+   printf("Iniciando calculo de procesos paralelos a %s\n", nombre);
+   sprintf(comando, "%s\\jobs\\par%s.bat", getenv("WAREHOME"), nombre);
+   fflush(stdout);
+   sprintf(User_Name, "USERNAME=%s", username);
+   _putenv(User_Name);
+   sprintf(PassWord, "PASSWORD=%s", password);
+   _putenv(PassWord);
+   if (_spawnlp(_P_NOWAIT, comando, comando, NULL) &&
+       (errno != ENOENT) && (errno != EINVAL)) {
+      printf("Error %d en par%s.bat!\n", errno, nombre);
+      exit(1);
+   }
+}
+
+void dispara_posterior(char *nombre)
+{
+   char comando[128];
+
+   printf("Iniciando calculo de procesos posteriores a %s\n", nombre);
+   sprintf(comando, "%s\\jobs\\pos%s.bat", getenv("WAREHOME"), nombre);
+   fflush(stdout);
+   sprintf(User_Name, "USERNAME=%s", username);
+   _putenv(User_Name);
+   sprintf(PassWord, "PASSWORD=%s", password);
+   _putenv(PassWord);
+   if (_spawnlp(_P_WAIT, comando, comando, NULL) &&
+       (errno != ENOENT) && (errno != EINVAL)) {
+      printf("Error %d en pos%s.bat!\n", errno, nombre);
+      exit(1);
+   }
+}
+
+/******************************
+   Programa Principal
+ ******************************/
+
+void main(int argc, char *argv[])
+{
+   char operacao[10];
+   int Trace, Limpiar, ConsTemp;
+
+   oraca.orastxtf = ORASTFERR;
+ 
+   switch (argc) {
+      case 5:
+	 if (strcmp (argv[1], "COMP"    ) && strncmp(argv[1], "CGATR", 5) &&
+	     strncmp(argv[1], "CGJRQ", 5) && strncmp(argv[1], "CGDAT", 5) &&
+	     strncmp(argv[1], "CCONS", 5) && strncmp(argv[1], "ACTDW", 5) &&
+	     strncmp(argv[1], "CNJRQ", 5) && strncmp(argv[1], "CCOMP", 5) &&
+	     strncmp(argv[1], "CNTMP", 5) && strncmp(argv[1], "LMPDW", 5) &&
+	     strncmp(argv[1], "SDTDM", 5) && strncmp(argv[1], "RESET", 5) &&
+	     strcmp (argv[1], "CARG"    ) && strcmp (argv[1], "WCON"    )) {
+	    printf("Error: parametro %s desconocido.\n", argv[1]);
+	    printf("Formato: procdw [<oper>] [<usuario> <password> <dbname>]\n");
+	    printf("\noper puede ser:\n");
+	    printf("\tCARG : Desde CGATR hasta CGDAT\n");
+	    printf("\tWCON : De ACTDW en adelante\n");
+	    printf("\tCOMP : Proceso completo (todos los seguintes)\n");
+	    printf("\tCGATR: Carga de atributos y instancias de dimension\n");
+	    printf("\tCGJRQ: Carga de jerarquias de dimensiones\n");
+	    printf("\tCGDAT: Convalidacion y carga de datos para tablas intermedias.\n");
+	    printf("\tCCONS: Calculo de indicadores consolidables\n");
+	    printf("\tACTDW: Actualizacion del Data Warehouse\n");
+	    printf("\tCNJRQ: Consolidacion jerarquica\n");
+	    printf("\tCCOMP: Calculo de indicadores no consolidables\n");
+	    printf("\tCNTMP: Consolidacion temporal\n");
+	    printf("\tSDTDM: Senalizar datos nuevos para los data marts.\n");
+	    printf("\tLMPDW: Limpeza del Data Warehouse\n");
+	    exit(1);
+	 }
+	 else {
+	    strcpy(operacao, argv[1]);
+	    strcpy(username, argv[2]);
+	    strcpy(password, argv[3]);
+       strcpy(dbname,   argv[4]);
+	 }
+	 break;
+      case 4:
+         strcpy(operacao, "COMP");
+         strcpy(username, argv[1]);
+         strcpy(password, argv[2]);
+         strcpy(dbname,   argv[3]);
+         break;
+      case 3:
+       if (strcmp (argv[1], "COMP"    ) && strncmp(argv[1], "CGATR", 5) &&
+           strncmp(argv[1], "CGJRQ", 5) && strncmp(argv[1], "CGDAT", 5) &&
+           strncmp(argv[1], "CCONS", 5) && strncmp(argv[1], "ACTDW", 5) &&
+           strncmp(argv[1], "CNJRQ", 5) && strncmp(argv[1], "CCOMP", 5) &&
+           strncmp(argv[1], "CNTMP", 5) && strncmp(argv[1], "RESET", 5) &&
+           strncmp(argv[1], "SDTDM", 5) && strncmp(argv[1], "LMPDW", 5) &&
+           strcmp (argv[1], "CARG"    ) && strcmp (argv[1], "WCON"    )) {
+         printf("Error: parametro %s desconocido.\n", argv[1]);
+      default:
+         printf("Formato: procdw [<oper>[+]] [<usuario> <password> <dbname>]\n");
+         printf("\noper puede ser:\n");
+         printf("\tCARG : Desde CGATR hasta CGDAT\n");
+         printf("\tWCON : De ACTDW en adelante\n");
+         printf("\tCOMP : Proceso completo (todos los seguintes)\n");
+         printf("\tCGATR: Carga de atributos y instancias de dimension\n");
+         printf("\tCGJRQ: Carga de jerarquias de dimensiones\n");
+         printf("\tCGDAT: Convalidacion y carga de datos para tablas intermedias.\n");
+         printf("\tCCONS: Calculo de indicadores consolidables\n");
+         printf("\tACTDW: Actualizacion del Data Warehouse\n");
+         printf("\tCNJRQ: Consolidacion jerarquica\n");
+         printf("\tCCOMP: Calculo de indicadores no consolidables\n");
+         printf("\tCNTMP: Consolidacion temporal\n");
+         printf("\tSDTDM: Senalizar datos nuevos para los data marts.\n");
+         printf("\tLMPDW: Limpieza del Data Warehouse\n");
+         printf("\n Un '+' pegado a <oper> hace con que se haga el calculo desde la operacion\n\thasta el final.\n");
+         #ifdef __DEBUG
+            printf("Debug encendido\n");
+         #endif
+         exit(1);
+	 }
+	 else {
+       strcpy(operacao, argv[1]);
+       strcpy(username, USERNAME);
+       strcpy(password, PASSWORD);
+       strcpy(dbname,   "METAMODELO");
+	 }
+	 break;
+   }
+   EXEC SQL CONNECT :username IDENTIFIED BY :password using :dbname;
+   printf("Inicio del procesamiento - conectado con usuario %s\n", username);
+
+   EXEC SQL alter session set NLS_DATE_FORMAT = 'DD-MM-YYYY HH24:MI:SS';
+   EXEC SQL alter session set OPTIMIZER_GOAL = ALL_ROWS;
+   EXEC SQL select sysdate into Fc_Inic_Proc from dual;
+   prepara_oci();
+
+   /************************************
+    Carga de Atributos
+    ************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CGATR", 5) ||
+       !strcmp(operacao, "CARG")) {
+      dispara_anterior("CGATR");
+      printf("Inicio de la carga de atributos.\n");
+      dispara_paralelo("CGATR");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 4;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'I'  -- Estado Import. Instancias
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Proc_Atrb_Dimen.Importa_Atributos(1);
+      end;
+      END-EXEC;
+      if (strcmp(operacao, "CARG") && operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("CGATR");
+   }
+
+   /************************************
+    Carga de Jerarquias
+    ************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CGJRQ", 5) ||
+       !strcmp(operacao, "CARG")) {
+      dispara_anterior("CGJRQ");
+      printf("Inicio de la carga de jerarquias.\n");
+      dispara_paralelo("CGJRQ");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 5;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'J'  -- Estado Import. Jerarquias
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Proc_Atrb_Dimen.Importa_Jerarquias(1); 
+      end;
+      END-EXEC;
+      if (strcmp(operacao, "CARG") && operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("CGJRQ");
+   }
+
+   /************************************
+    Carga de datos
+    ************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CGDAT", 5) ||
+       !strcmp(operacao, "CARG")) {
+      dispara_anterior("CGDAT");
+      printf("Inicio de la importacion de datos.\n");
+      dispara_paralelo("CGDAT");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 6;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'D'  -- Estado Import. Datos
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('CGDAT');
+	 for r_fontes in (
+	    select NU_FUENTE_INDCA_PERFM
+	       from G3_FUENTE_INDCA_PERFM
+	       where NU_PERFIL_RESP_FUENTE_INDCA = 1) loop
+	    Importa_Datos.Traduce_Claves(1, 1, r_fontes.NU_FUENTE_INDCA_PERFM);
+	 end loop;
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      if (strcmp(operacao, "CARG") && operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("CGDAT");
+   }
+
+   if (!strcmp(operacao, "WCON"))
+	strcpy(operacao, "COMP");
+
+   /************************************
+    Actualizacion del Data Warehouse por los datos en movimiento
+    ************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "ACTDW", 5)) {
+      dispara_anterior("ACTDW");
+      printf("Inicio de la distribuicion de los datos.\n");
+      dispara_paralelo("ACTDW");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 8;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'W'  -- Estado Transf. DW
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('ACTDW');
+      end;
+      END-EXEC;
+      prepara_oci();
+      if (operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      if (!strcmp(operacao, "COMP"))
+	 atualiza_dw(1);
+      else
+	 atualiza_dw(0);
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("ACTDW");
+   }
+
+   /************************************
+    Calculo de Indicadores del tipo Calculate/Consolidate
+    ************************************/
+   
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CCONS", 5)) {
+      dispara_anterior("CCONS");
+      printf("Inicio del calculo de indicadores consolidables.\n");
+      dispara_paralelo("CCONS");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 7;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE 
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'A'  -- Estado Calculate/Consolidate
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('CCONS');
+	 G3_Log_Err.Log_Msj('D', 'Inicio del calculo de indicadores consolidables.');
+	 commit;
+      end;
+      END-EXEC;
+      calcula_indicadores("CC");
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Log_Msj('D', 'Fin del calculo de indicadores consolidables.');
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      if (operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("CCONS");
+   }
+   
+   /**************************************
+    Consolidacion Jerarquica
+    **************************************/
+  
+  if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CNJRQ", 5)) {
+      dispara_anterior("CNJRQ");
+      printf("Inicio de la consolidacion jerarquica.\n");
+      dispara_paralelo("CNJRQ");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 9;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'C'   -- Estado Cons. Jerarq.
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('CNJRQ');
+      end;
+      END-EXEC;
+      prepara_oci();
+      cons_jerarq();
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      if (operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("CNJRQ");
+   }
+
+   /************************************
+    Calculo de Indicadores del tipo Calculate Full
+    ************************************/
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CCOMP", 5)) {
+      dispara_anterior("CCOMP");
+      printf("Inicio del calculo de indicadores no consolidables.\n");
+      dispara_paralelo("CCOMP");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 10;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'F'  -- Estado Calculate Full
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('CCOMP');
+      end;
+      END-EXEC;
+      calcula_indicadores("CF");
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      if (operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      dispara_posterior("CCOMP");
+   }
+
+   /**************************************
+    Consolidacion Temporal
+    **************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "CNTMP", 5)) {
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :ConsTemp
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 51;
+      if (ConsTemp) {
+	 if (!strcmp(operacao, "CNTMP"))
+	    prepara_oci();
+	 dispara_anterior("CNTMP");
+	 printf("Inicio de la consolidacion temporal.\n");
+	 dispara_paralelo("CNTMP");
+	 Trace = 0;
+	 EXEC SQL select TX_VL_PARM_SIST
+		     into :Trace
+		     from G3_PARM_SIST
+		     where NU_PARM_SIST = 11;
+	 if (Trace)
+	    EXEC SQL alter session set SQL_TRACE = TRUE;
+	 EXEC SQL EXECUTE
+	 begin
+	    update G3_PARM_SIST set TX_VL_PARM_SIST = 'T'  -- Estado Cons. Temporal
+	       where NU_PARM_SIST = 1;
+	    commit;
+	    G3_Log_Err.Inic_Log('CNTMP');
+	 end;
+	 END-EXEC;
+	 cons_temporal();
+	 EXEC SQL EXECUTE
+	 begin
+	    G3_Log_Err.Termina_Log;
+	 end;
+	 END-EXEC;
+	 if (operacao[5] == '+')
+	    strcpy(operacao, "COMP");
+	 EXEC SQL alter session set SQL_TRACE = FALSE;
+	 dispara_posterior("CNTMP");
+      }
+   }
+
+   /**************************************
+    Senalizando los nuevos datos para los data marts
+    **************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "SDTDM", 5)) {
+      dispara_anterior("SDTDM");
+      dispara_paralelo("SDTDM");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 14;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'M'  -- Estado Transferencia a los data marts
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('SDTDM');
+      end;
+      END-EXEC;
+
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      if (operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      dispara_posterior("SDTDM");
+   }
+
+   /**************************************
+    Limpiando el Data Warehouse de los datos viejos
+    **************************************/
+
+   if (!strcmp(operacao, "COMP") || !strncmp(operacao, "LMPDW", 5)) {
+      dispara_anterior("LMPDW");
+      dispara_paralelo("LMPDW");
+      Trace = 0;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Trace
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 12;
+      if (Trace)
+	 EXEC SQL alter session set SQL_TRACE = TRUE;
+
+      EXEC SQL EXECUTE
+      begin
+	 update G3_PARM_SIST set TX_VL_PARM_SIST = 'L'  -- Estado Limpieza Data Warehouse
+	    where NU_PARM_SIST = 1;
+	 commit;
+	 G3_Log_Err.Inic_Log('LMPDW');
+      end;
+      END-EXEC;
+      EXEC SQL select TX_VL_PARM_SIST
+		  into :Limpiar
+		  from G3_PARM_SIST
+		  where NU_PARM_SIST = 13;
+      limpa_log();
+
+      if (Limpiar)
+	 limpa_dw();
+
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Termina_Log;
+      end;
+      END-EXEC;
+      EXEC SQL alter session set SQL_TRACE = FALSE;
+      if (operacao[5] == '+')
+	 strcpy(operacao, "COMP");
+      dispara_posterior("LMPDW");
+   }
+
+   if (!strcmp(operacao, "RESET")) {
+      dispara_anterior("RESET");
+      dispara_paralelo("RESET");
+      strcpy(operacao, "COMP");
+      dispara_posterior("RESET");
+   }
+
+   if (!strcmp(operacao, "COMP"))
+      Cierra_DW(1);
+   else
+      Cierra_DW(0);
+   printf("Fin del procesamiento - desconectando.\n");
+   libera_oci();
+   EXEC SQL COMMIT WORK RELEASE;
+
+   exit(0);
+}

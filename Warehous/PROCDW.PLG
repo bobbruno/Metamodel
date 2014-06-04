@@ -1,0 +1,51 @@
+--------------------Configuration: PROCDW - Win32 Release--------------------
+Begining build with project "C:\Projs\Warehous\PROCDW.DSP", at root.
+Active configuration is Win32 (x86) Console Application (based on Win32 (x86) Console Application)
+
+Project's tools are:
+			"32-bit C/C++ Compiler for 80x86" with flags "/G5 /MT /W3 /GX /O2 /Ob2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /D "_MBCS" /FR"Release/" /Fp"Release/PROCDW.pch" /YX /Fo"Release/" /Fd"Release/" /FD /c "
+			"Win32 Resource Compiler" with flags "/l 0x416 /d "NDEBUG" "
+			"Browser Database Maker" with flags "/nologo /o"Release/PROCDW.bsc" "
+			"COFF Linker for 80x86" with flags "kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib /nologo /subsystem:console /incremental:no /pdb:"Release/PROCDW.pdb" /machine:I386 /out:"Release/PROCDW.exe" "
+			"Custom Build" with flags ""
+			"<Component 0xa>" with flags ""
+
+Creating temp file "C:\WINDOWS\TEMP\RSP42E4.BAT" with contents <@echo off
+proc iname=.\Calc.pc userid=warehouse/warehouse@nabiscoprod
+>
+Creating command line "C:\WINDOWS\TEMP\RSP42E4.BAT" 
+Creating temp file "C:\WINDOWS\TEMP\RSP42E5.TMP" with contents </G5 /MT /W3 /GX /O2 /Ob2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /D "_MBCS" /FR"Release/" /Fp"Release/PROCDW.pch" /YX /Fo"Release/" /Fd"Release/" /FD /c 
+"C:\Projs\Warehous\calc.c"
+>
+Creating command line "cl.exe @C:\WINDOWS\TEMP\RSP42E5.TMP" 
+Compilando Calc.PC
+Creating temp file "C:\WINDOWS\TEMP\RSP5073.TMP" with contents <kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib /nologo /subsystem:console /incremental:no /pdb:"Release/PROCDW.pdb" /machine:I386 /out:"Release/PROCDW.exe" 
+.\Release\atual2.obj
+.\Release\calc.obj
+.\Release\calccons.obj
+.\Release\constemp.obj
+.\Release\dw_aux.obj
+.\Release\jerarq.obj
+.\Release\lmpdw.obj
+.\Release\nmtabla.obj
+..\..\Orawin95\Oci73\Lib\Msvc\Ociw32.lib
+..\..\Orawin95\Oci73\Lib\Msvc\Ora73.lib
+..\..\Orawin95\Pro22\Lib\Msvc\Sqllib18.lib>
+Creating command line "link.exe @C:\WINDOWS\TEMP\RSP5073.TMP" 
+Compiling...
+Microsoft (R) 32-bit C/C++ Optimizing Compiler Version 11.00.7022 for 80x86
+Copyright (C) Microsoft Corp 1984-1997. All rights reserved.
+
+cl /G5 /MT /W3 /GX /O2 /Ob2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /D "_MBCS" /FR"Release/" /Fp"Release/PROCDW.pch" /YX /Fo"Release/" /Fd"Release/" /FD /c 
+   "C:\Projs\Warehous\calc.c"
+
+calc.c
+Note: Using precompiled header 
+
+Linking...
+Creating command line "bscmake.exe /nologo /o"Release/PROCDW.bsc"  .\Release\atual2.sbr .\Release\calc.sbr .\Release\calccons.sbr .\Release\constemp.sbr .\Release\dw_aux.sbr .\Release\jerarq.sbr .\Release\lmpdw.sbr .\Release\nmtabla.sbr" 
+Creating browse info file...
+
+
+
+PROCDW.exe - 0 error(s), 0 warning(s)

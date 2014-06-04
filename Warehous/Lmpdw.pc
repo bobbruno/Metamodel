@@ -1,0 +1,165 @@
+/*****************************************************************************
+ *                                                                           *
+ *                   ACTUALIZACION DEL DATA WAREHOUSE                        *
+ *    Limpieza de datos del Data Warehouse. Borra de las tablas de serie     *
+ *    historica los valores para cada indicador en acuerdo con sus           *
+ *    parametros de historico en G3_INDCA_PERFM (CT_xxx_PERM_INDCA_PERFM).   *
+ *                                                                           *
+ *                                                                           *
+ *  Desarrollado por Roberto Bruno Martins - Price Waterhouse                *
+ *  en 10/1996.                                                              *
+ *                                                                           *
+ *****************************************************************************/
+#ifndef ORA_PROC
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
+#include <sqlca.h>
+#include <oraca.h>
+#include "dw_aux.h"
+
+
+static char delete_command[] = "declare\n"
+			       "   l_dummy char(1);\n"
+			       "begin\n"
+			       "   select /*+ INDEX(S) */ 'x' into l_dummy\n"
+			       "      from %s S\n"
+			       "      where NU_INDCA_PERFM = %d and\n"
+			       "            NU_VISION = %d and\n"
+			       "            CD_GRNL_SERIE_HIST = '%c' and\n"
+			       "            FC_REFR_SERIE_HIST < to_date(%d, 'J') and\n"
+			       "            ROWNUM = 1;\n"
+			       "   G3_Log_Err.Log_Msj('D', 'Borrando indicador %d antes de ' ||\n"
+			       "      to_date(%d, 'J'));\n"
+			       "   delete from %s where NU_INDCA_PERFM = %d and\n"
+			       "            NU_VISION = %d and\n"
+			       "            CD_GRNL_SERIE_HIST = '%c' and\n"
+			       "            FC_REFR_SERIE_HIST < to_date(%d, 'J');\n"
+			       "exception\n"
+			       "   when NO_DATA_FOUND then\n"
+			       "      NULL;\n"
+			       "end;";
+void limpa_log()
+{
+   int Limpar;
+
+   EXEC SQL whenever SQLERROR do sql_error("Oracle error");
+
+   EXEC SQL
+      select TX_VL_PARM_SIST into :Limpar
+         from G3_PARM_SIST
+         where NU_PARM_SIST = 15;
+
+   if (Limpar) {
+      Paso_Esencial = 0;
+      EXEC SQL EXECUTE
+      begin
+	 G3_Log_Err.Log_Msj('D', 'Borrando log de errores antes de ' || trunc(sysdate - :Limpar, 'MONTH'));
+	 delete from G3_LOG_ERROR
+	    where FC_INICIO_LOG_ERROR < trunc(sysdate - :Limpar, 'MONTH');
+	 commit;
+      end;
+      END-EXEC;
+      Paso_Esencial = 1;
+   }
+}
+
+void limpa_dw()
+{
+   char buf_delete[2048];
+   VARCHAR Tabla[40];
+   int FcMin, FcDias, FcSemanas, FcMeses, FcAnos;
+   int Indca, Vision, Dias, Semanas, Meses, Anos;
+
+   EXEC SQL whenever SQLERROR do sql_error("Oracle error");
+
+
+   /* Para cada indicador en el Data Warehouse */
+   EXEC sql declare c_indca cursor for
+      select NU_INDCA_PERFM, NU_VISION, nvl(CT_DIAS_PERM_INDCA_PERFM, 0),
+	     nvl(CT_SEM_PERM_INDCA_PERFM, 0), nvl(CT_MESES_PERM_INDCA_PERFM, 0),
+	     nvl(CT_ANOS_PERM_INDCA_PERFM, 0)
+	 from G3_INDCA_PERFM
+	 order by NU_INDCA_PERFM;
+
+   EXEC SQL open c_indca;
+
+   EXEC SQL whenever NOT FOUND do break;
+   for (;;) {
+      EXEC SQL fetch c_indca into :Indca, :Vision,
+	       :Dias, :Semanas, :Meses, :Anos;
+      
+      EXEC SQL EXECUTE
+      declare
+	 Ahora DATE;
+      begin
+	 Ahora:= sysdate;
+	 if :Dias != 0 then
+	    :FcDias:= to_number(to_char(trunc(Ahora) - :Dias, 'J'));
+	 end if;
+
+	 if :Semanas != 0 then
+	    :FcSemanas:= to_number(to_char((trunc(Ahora, 'DAY') - 7 * :Semanas), 'J'));
+	 end if;
+
+	 if :Meses != 0 then
+	    :FcMeses:= to_number(to_char(add_months(trunc(Ahora, 'MONTH') , - :Meses), 'J'));
+	 end if;
+
+	 if :Anos != 0 then
+	    :FcAnos:= to_number(to_char(add_months(trunc(Ahora, 'YEAR'), -12 * :Anos), 'J'));
+	 end if;
+      end;
+      END-EXEC;
+
+      /* Para cada tabla donde es posible haver datos para este indicador */
+      EXEC SQL declare c_tablas cursor for
+	 select T.NM_TABLA_SH, to_number(to_char(T.FC_MIN_TABLA_SH, 'J'))
+	    from G3_TABLA_SH T,
+		 G3_TABLA_SH_VISION V
+	    where T.NU_TABLA_SH = V.NU_TABLA_SH and
+		  V.NU_VISION = :Vision;
+
+      EXEC SQL open c_tablas;
+
+      for (;;) {
+	 EXEC SQL fetch c_tablas into :Tabla, :FcMin;
+	 Tabla.arr[Tabla.len] = 0;
+
+#ifdef __DEBUG
+	 printf(delete_command, Tabla.arr, Indca, Vision,
+		  'D', FcDias, Indca, FcDias, Tabla.arr, Indca, Vision, 'D', FcDias);
+#endif
+	 /* Borrando datos diarios */
+	 if ((Dias) && (FcDias >= FcMin)) {
+	    sprintf(buf_delete, delete_command, Tabla.arr, Indca, Vision,
+		     'D', FcDias, Indca, FcDias, Tabla.arr, Indca, Vision, 'D', FcDias);
+	    EXEC SQL execute immediate :buf_delete;
+	 }
+
+	 /* Borrando datos semanales */
+	 if ((Semanas) && (FcSemanas >= FcMin)) {
+	    sprintf(buf_delete, delete_command, Tabla.arr, Indca, Vision,
+		     'S', FcSemanas, Indca, FcSemanas, Tabla.arr, Indca, Vision, 'S', FcSemanas);
+	    EXEC SQL execute immediate :buf_delete;
+	 }
+
+	 /* Borrando datos mensuales */
+	 if ((Meses) && (FcMeses >= FcMin)) {
+	    sprintf(buf_delete, delete_command, Tabla.arr, Indca, Vision,
+		     'M', FcMeses, Indca, FcMeses, Tabla.arr, Indca, Vision, 'M', FcMeses);
+	    EXEC SQL execute immediate :buf_delete;
+	 }
+
+	 /* Borrando datos anuales */
+	 if ((Anos) && (FcAnos >= FcMin)) {
+	    sprintf(buf_delete, delete_command, Tabla.arr, Indca, Vision,
+		     'A', FcAnos, Indca, FcAnos, Tabla.arr, Indca, Vision, 'A', FcAnos);
+	    EXEC SQL execute immediate :buf_delete;
+	 }
+	 EXEC SQL commit;
+      }
+   }
+}

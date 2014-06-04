@@ -1,0 +1,424 @@
+#ifndef ORA_PROC
+#include <stdio.h>
+#include <string.h>
+#endif
+#include <sqlca.h>
+#include <oraca.h>
+#include "dw_aux.h"
+
+static char Validos[20];
+
+/******************************************************************************/
+/* Funcion que determina las granularidades para las cuales debo intentar     */
+/* consolidar temporalmente                                                   */
+/******************************************************************************/
+
+void determ_granul_valida(const char *opciones)
+{
+   register int i;
+
+   *Validos = 0;
+   for (i = 0; opciones[i]; i++) {
+      switch (opciones[i]) {
+	 case 'A':
+	    strcat(Validos, "T");
+	 case 'T':
+	    strcat(Validos, "M");
+	 case 'M':
+	    strcat(Validos, "S");
+	 case 'S':
+	    strcat(Validos, "D");
+	 case 'D':
+	    break;
+      }
+   }
+}
+
+/******************************************************************************/
+/* Funcion que determina si una opcion es valida.                             */
+/******************************************************************************/
+IsValidOption(char *opciones, char opcion)
+{
+   int 	i;
+
+   for (i = 0; i < strlen(opciones); i++)
+      if (opciones[i] == opcion)
+         return(1);
+   return(0);
+}
+
+/******************************************************************************/
+/* Funcion que trae la siguiente granularidad a consolidar.                   */
+/******************************************************************************/
+char GetNextGranul(char *opciones, char orig, char grnl)
+{
+   switch(grnl)	{
+      case 'D':
+         if (IsValidOption(opciones, 'S'))
+            return('S');
+         else if(IsValidOption(opciones, 'M') && orig != 'S')
+            return('M');
+         else if(IsValidOption(opciones, 'A'))
+            return('A');
+         break;
+      case 'S':
+         if(orig == 'S') /* No se pueden pasar de semanales a mensuales */
+	 {
+            if (IsValidOption(opciones, 'A'))
+               return('A');
+         } 
+	 else	{
+            if (IsValidOption(opciones, 'M'))
+               return('M');
+            else
+	    if (IsValidOption(opciones, 'A'))
+               return('A');
+         }
+         break;
+      case 'M':
+         if (IsValidOption(opciones, 'A'))
+            return('A');
+         break;
+      default:
+         break;
+   }
+   return(' ');
+}
+
+/******************************************************************************/
+/* Funcion de validacion del metodo de consolidacion.                         */
+/******************************************************************************/
+ValidMethod(char *Metodo)
+{
+   if (strcmp(Metodo, "SUM") != 0 &&
+       strcmp(Metodo, "AVG") != 0 &&
+       strcmp(Metodo, "FIRST") != 0 &&
+       strcmp(Metodo, "LAST") != 0)
+      return(0);
+   return(1);
+}
+
+/******************************************************************************/
+/* Funcion de declaracion del cursor por indicador                            */
+/******************************************************************************/
+static void DecCursorIndicador()
+{
+   EXEC SQL DECLARE Indicador CURSOR FOR	
+      select I.nu_indca_perfm, I.nu_vision,
+             I.cd_grnl_indca_perfm, ltrim(rtrim(I.cd_metd_cons_tiempo)),
+	     I.fc_ult_atual_indca,
+             I.FC_LIM_INF_INDCA, I.FC_LIM_SUP_INDCA, sysdate
+	 from G3_INDCA_PERFM I
+	 where I.CD_INDCA_ATUAL = '1' and
+	       INSTR(:Validos, CD_GRNL_INDCA_PERFM) > 0;
+   EXEC SQL OPEN Indicador;
+}
+
+/******************************************************************************/
+/* Funcion de cierre del cursor por indicador                                 */
+/******************************************************************************/
+static void CerrarCursorIndicador()
+{
+   EXEC SQL CLOSE Indicador;
+}
+
+/******************************************************************************/
+/* Funcion de creacion de una tabla auxiliar para mejorar la performance de   */
+/* la consolidacion.  Tomada de Gen_Tab_Temp_Cons (jerarq.pc).                */
+/******************************************************************************/
+static void GenTabAux(int Indca, int Vision, T_DATE Fc_Desde, 
+                      T_DATE Fc_Hasta, char Grnl, char NueGrnl, T_DATE Fc_Ref,
+		      T_DATE Fc_Gen, int Fuente, char *Metodo,
+		      char *Nombre_Tabla)
+{
+   register int 	i;
+   char	aux_sql[8192], temp[512];
+
+   EXEC SQL whenever SQLERROR do sql_error("Consolidacion Temporal");
+
+   /* Comienza a armar la estructura de la tabla */
+   strcpy(aux_sql, "create table g3_temp_cons_temp(nu_indca_perfm,nu_vision,\n"
+	"ct_valor_serie_hist,nu_instan_dimen__1,nu_instan_dimen__2,nu_instan_dimen__3,\n"
+	"nu_instan_dimen__4,nu_instan_dimen__5,nu_instan_dimen__6,nu_instan_dimen__7,\n"
+	"nu_instan_dimen__8,nu_instan_dimen__9,nu_instan_dimen__10,\n"
+	"nu_instan_dimen__11,nu_instan_dimen__12,nu_instan_dimen__13,\n"
+	"nu_instan_dimen__14,nu_instan_dimen__15,nu_instan_dimen__16,\n"
+	"fc_refr_serie_hist,cd_grnl_serie_hist,\n"
+	"nu_fuente_indca_perfm,fc_gen_fuente_indca_perfm) \n"
+	"storage(INITIAL 4M NEXT 4M PCTINCREASE 0 MINEXTENTS 5 MAXEXTENTS UNLIMITED) \n"
+	"TABLESPACE DW_TEMP UNRECOVERABLE PARALLEL (DEGREE 4) \n");
+   sprintf(temp, "as select %d, %d, ", Indca, Vision);
+   strcat(aux_sql, temp);
+
+   /* Decide que metodo de consolidacion hay que aplicar -> define la estructura */
+   /* del select.                                                                */
+   if (strcmp(Metodo, "SUM") == 0 || strcmp(Metodo, "AVG") == 0) {
+      sprintf(temp, "%s(ct_valor_serie_hist)\n", Metodo);
+      strcat(aux_sql, temp);
+      for (i = 0; i < 16; i++) {
+         sprintf(temp, ",nu_instan_dimen__%d",i+1);
+         strcat(aux_sql, temp);
+      }
+      sprintf(temp, ",\n'%s', '%c', %d, '%s' from \n", Fc_Ref, NueGrnl, Fuente, Fc_Gen);
+      strcat(aux_sql, temp);
+      strcat(aux_sql, Nombre_Tabla);
+      strcat(aux_sql, " where nu_indca_perfm = ");
+      sprintf(temp, "%d and nu_vision = %d \nand cd_grnl_serie_hist = '%c' \nand ", Indca, Vision, Grnl);
+      strcat(aux_sql, temp);
+      sprintf(temp, "fc_refr_serie_hist between '%s' and '%s'", Fc_Desde, Fc_Hasta);
+      strcat(aux_sql, temp);
+      strcat(aux_sql, "\n group by ");
+      for (i = 0; i < 16; i++) {
+         if (i > 0)
+            strcat(aux_sql, ",");
+         sprintf(temp, "nu_instan_dimen__%d",i+1);
+         strcat(aux_sql, temp);
+      }
+   }
+   else
+   if (strcmp(Metodo, "FIRST") == 0 || strcmp(Metodo, "LAST") == 0) {
+      strcat(aux_sql, "max(ct_valor_serie_hist)\n");
+      for (i = 0; i < 16; i++) {
+         sprintf(temp, ",nu_instan_dimen__%d",i+1);
+         strcat(aux_sql, temp);
+      }
+      sprintf(temp, ",\n'%s', '%c', %d, '%s' from \n", Fc_Ref, NueGrnl, Fuente, Fc_Gen);
+      strcat(aux_sql, temp);
+      strcat(aux_sql, Nombre_Tabla);
+      strcat(aux_sql, " a where nu_indca_perfm = ");
+      sprintf(temp, "%d and nu_vision = %d and cd_grnl_serie_hist = '%c' \nand ",
+              Indca, Vision, Grnl);
+      strcat(aux_sql, temp);
+      strcat(aux_sql, "fc_refr_serie_hist = (select ");
+      if (strcmp(Metodo, "FIRST") == 0)
+         strcat(aux_sql, " min(b.fc_refr_serie_hist) from \n");
+      else
+         strcat(aux_sql, " max(b.fc_refr_serie_hist) from \n");
+      strcat(aux_sql, Nombre_Tabla);
+      sprintf(temp, " b where b.nu_indca_perfm = %d and b.nu_vision = %d \n", Indca, Vision);
+      strcat(aux_sql, temp);
+      for (i = 0; i < 16; i++) {
+         if (i == 6 || i == 11)
+            strcat(aux_sql, "\n");
+         sprintf(temp, "and a.nu_instan_dimen__%d = b.nu_instan_dimen__%d ",i+1, i+1);
+         strcat(aux_sql, temp);
+      }
+      sprintf(temp, "\nand b.cd_grnl_serie_hist = '%c' and ", Grnl);
+      strcat(aux_sql, temp);
+      sprintf(temp, "fc_refr_serie_hist between '%s' and '%s')", Fc_Desde, Fc_Hasta);
+      strcat(aux_sql, temp);
+      strcat(aux_sql, "\n group by ");
+      for (i = 0; i < 16; i++) {
+         if (i > 0)
+            strcat(aux_sql, ",");
+         sprintf(temp, "nu_instan_dimen__%d",i+1);
+         strcat(aux_sql, temp);
+      }
+   }
+#ifdef __DEBUG
+   printf("%s\n", aux_sql);
+#else
+   EXEC SQL EXECUTE IMMEDIATE :aux_sql;
+#endif
+}
+
+/******************************************************************************/
+/* Funcion de consolidacion que recibe los siguientes parametros:             */
+/*    Fuente del dato.                                                        */
+/*    Fecha de generacion.                                                    */
+/*    Fecha desde.                                                            */
+/*    Fecha hasta.                                                            */
+/******************************************************************************/
+static int Consolidar(char *opciones, int fuente)
+{
+   int	 OperOK;
+   int	 NroIndic;
+   int	 NroVision;
+   register int i;
+   short IndDesde, IndHasta;
+   VARCHAR	Granul[2], LastGranul[2], Metodo[11], Nombre_Tabla[35];
+   T_DATE	fdesde, fhasta, FcUlt;
+   T_DATE	AjDesde, AjHasta, SigDesde, SigHasta;
+   T_REG_SH RgIn;
+   T_DATE	fgeneracion;
+
+   determ_granul_valida(opciones);
+   printf("Consolidando los indicadores de granularidad dentro de <%s>...\n", Validos);
+   /*	Apertura del cursor de indicadores	*/
+   DecCursorIndicador();
+   for (;;) {
+      EXEC SQL WHENEVER NOT FOUND DO break;
+      EXEC SQL 
+         FETCH Indicador 
+	    into :NroIndic, :NroVision, :Granul, :Metodo, :FcUlt,
+	         :fdesde:IndDesde, :fhasta:IndHasta, :fgeneracion;
+      EXEC SQL WHENEVER NOT FOUND continue;
+      Granul.arr[Granul.len] = '\0';
+      strcpy((char *)LastGranul.arr, (char *)Granul.arr);
+      LastGranul.len = Granul.len;
+      LastGranul.arr[LastGranul.len] = '\0';
+      Metodo.arr[Metodo.len] = '\0';
+      fgeneracion[19] = '\0';
+      printf("Indicador <%d>\n", NroIndic);
+
+      /* Valida el metodo */
+      if(!ValidMethod((char *)Metodo.arr)) {
+	  EXEC SQL EXECUTE
+	  begin
+	     G3_LOG_ERR.Log_Msj('E', 'Metodo desconocido para indicador ' || to_char(:NroIndic) || '.');
+	  end;
+	  END-EXEC;
+      }
+
+      /*	Loop por granularidad */
+      for(LastGranul.arr[0] = GetNextGranul(opciones, Granul.arr[0], LastGranul.arr[0]);
+          LastGranul.arr[0] != ' ';
+          LastGranul.arr[0] = GetNextGranul(opciones, Granul.arr[0], LastGranul.arr[0]))
+      {
+         /*	Se ajustan las fechas segun la granularidad	*/
+	 strncpy(AjDesde, fdesde, 20);
+	 strncpy(AjHasta, fhasta, 20);
+	 EXEC SQL EXECUTE
+	 begin
+	    G3_SUP_CONS_TEMP.ObtenerFechas(:LastGranul, :AjDesde, :AjHasta, :SigHasta);
+	 end;
+	 END-EXEC;
+	 strncpy(SigDesde, AjDesde, 20);
+	 printf("Obtencion de fechas desde: <%s> hasta: <%s>\n", AjDesde, AjHasta);
+	 /*	Loop por fechas	*/
+	 for(;;)
+	 {
+	    printf("Fecha de comienzo <%s>\n", SigDesde);
+
+	    EXEC SQL DECLARE Tabelas cursor for
+	       select T.NM_TABLA_SH
+	          from G3_TABLA_SH T,
+		       G3_TABLA_SH_VISION V
+	          where T.FC_MIN_TABLA_SH <= :SigDesde and
+		        T.FC_MAX_TABLA_SH >= :SigHasta and
+			T.NU_TABLA_SH = V.NU_TABLA_SH and
+			V.NU_VISION = :NroVision;
+	    EXEC SQL open Tabelas;
+	    for (;;) {
+	       EXEC SQL WHENEVER NOT FOUND do break;
+	       EXEC SQL fetch Tabelas into :Nombre_Tabla;
+	       EXEC SQL WHENEVER NOT FOUND continue;
+	       Nombre_Tabla.arr[Nombre_Tabla.len] = 0;
+	       /* Se crea la tabla auxiliar con las fechas y tabla de origen estipuladas */
+#ifndef __DEBUG
+	       EXEC SQL whenever SQLERROR continue;
+	       EXEC SQL drop table g3_temp_cons_temp;
+#endif
+	       EXEC SQL whenever SQLERROR do sql_error("Cons. Temporal");
+	       GenTabAux(NroIndic, NroVision, SigDesde, SigHasta, Granul.arr[0], LastGranul.arr[0], SigDesde, fgeneracion, fuente, (char *)Metodo.arr, Nombre_Tabla.arr);
+
+	       /* Se declara la tabla creada */
+	       EXEC SQL
+		  DECLARE g3_temp_cons_temp TABLE (
+			nu_indca_perfm number,
+			nu_vision number,
+			ct_valor_serie_hist number,
+			nu_instan_dimen__1 number,
+			nu_instan_dimen__2 number,
+			nu_instan_dimen__3 number,
+			nu_instan_dimen__4 number,
+			nu_instan_dimen__5 number,
+			nu_instan_dimen__6 number,
+			nu_instan_dimen__7 number,
+			nu_instan_dimen__8 number,
+			nu_instan_dimen__9 number,
+			nu_instan_dimen__10 number,
+			nu_instan_dimen__11 number,
+			nu_instan_dimen__12 number,
+			nu_instan_dimen__13 number,
+			nu_instan_dimen__14 number,
+			nu_instan_dimen__15 number,
+			nu_instan_dimen__16 number,
+			fc_refr_serie_hist char(19),
+			cd_grnl_serie_hist char(1),
+			nu_fuente_indca_perfm number,
+			fc_gen_fuente_indca_perfm char(19));
+
+#ifndef __DEBUG
+	       /*	Loop por los registros de la tabla */
+	       EXEC SQL DECLARE CurTabla CURSOR FOR
+		  select nu_indca_perfm, nu_vision, nu_instan_dimen__1,
+			 nu_instan_dimen__2, nu_instan_dimen__3, nu_instan_dimen__4,
+			 nu_instan_dimen__5, nu_instan_dimen__6, nu_instan_dimen__7,
+			 nu_instan_dimen__8, nu_instan_dimen__9, nu_instan_dimen__10,
+			 nu_instan_dimen__11, nu_instan_dimen__12, nu_instan_dimen__13,
+			 nu_instan_dimen__14, nu_instan_dimen__15, nu_instan_dimen__16,
+			 fc_refr_serie_hist, ct_valor_serie_hist, nu_fuente_indca_perfm,
+			 fc_gen_fuente_indca_perfm, cd_grnl_serie_hist
+		     from g3_temp_cons_temp;
+	       EXEC SQL OPEN CurTabla;
+
+	       for (i = 0;; i++) {
+		  EXEC SQL whenever NOT FOUND do break;
+		  EXEC SQL fetch CurTabla into :RgIn;
+		  EXEC SQL whenever NOT FOUND continue;
+		  EXEC SQL whenever SQLERROR do sql_error("Cons. Temporal");
+		  Graba_Reg_SH(&RgIn);
+		  if (i > 1000) {
+		     i = 1;
+		     EXEC SQL commit;
+		     putchar('.');
+		  }
+	       }
+	       EXEC SQL whenever SQLERROR do sql_error("Cons. Temporal");
+	       EXEC SQL CLOSE CurTabla;
+	       EXEC SQL drop table g3_temp_cons_temp;
+#endif
+	    }
+	    EXEC SQL close Tabelas;
+
+	    /*	Obtiene el siguiente periodo	*/
+	    strncpy(SigHasta, AjHasta, 20);
+	    EXEC SQL EXECUTE
+	    begin
+               :OperOK := G3_SUP_CONS_TEMP.FinIntervalo(:LastGranul, :SigDesde, :SigHasta);
+	    end;
+	    END-EXEC;
+
+	    if (OperOK)
+	       break;
+	 }
+
+	 /* Hace el log */
+	 EXEC SQL EXECUTE
+	 begin
+	    G3_Log_Err.Log_Msj('A', 'Consolidacion indicador: ' || to_char(:NroIndic) || ' a granularidad: ' || :LastGranul || '.');
+	 end;
+	 END-EXEC;
+      }
+
+      /*	Hace un commit por cada indicador	*/
+      EXEC SQL COMMIT;
+      EXEC SQL set transaction use rollback segment R01;
+   }
+
+   CerrarCursorIndicador();
+   return(1);
+}
+
+/***************************************************************************************/
+/* Funcion de consolidacion temporal llamada desde el programa principal.              */
+/***************************************************************************************/
+void cons_temporal()
+{
+   int 	Fuente;
+
+   EXEC SQL whenever SQLERROR do sql_error("Cons. Temporal");
+   EXEC SQL whenever NOT FOUND do sql_error("Cons. Temporal");
+   EXEC SQL commit;
+   EXEC SQL set transaction use rollback segment R01;
+
+
+   EXEC SQL
+      select NU_FUENTE_INDCA_PERFM
+         into :Fuente
+         from G3_FUENTE_INDCA_PERFM
+         where NM_FUENTE_INDCA_PERFM like 'DATOS CALCULADOS%';
+
+   Consolidar("DM", Fuente);
+}

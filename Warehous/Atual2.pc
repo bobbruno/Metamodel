@@ -1,0 +1,213 @@
+/*****************************************************************************
+ *                                                                           *
+ *                   ACTUALIZACION DEL DATA WAREHOUSE                        *
+ *                                                                           *
+ *             Actualizacion del Data Warehouse de datos importados o        *
+ *                                calculado                                  *
+ *                                                                           *
+ *  Desarrollado por Roberto Bruno Martins - Price Waterhouse                *
+ *  en 09/1996.                                                              *
+ *                                                                           *
+ *****************************************************************************/
+
+#ifndef ORA_PROC
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
+#include <sqlca.h>
+#include <oraca.h>
+#include <ocidfn.h>
+
+#include "dw_aux.h"
+
+static char SQL_INS[] =
+   "begin \n"
+   "insert into %.*s(NU_INDCA_PERFM,NU_VISION,NU_INSTAN_DIMEN__1,\n "
+   "NU_INSTAN_DIMEN__2,NU_INSTAN_DIMEN__3,NU_INSTAN_DIMEN__4,NU_INSTAN_DIMEN__5,"
+   "NU_INSTAN_DIMEN__6,NU_INSTAN_DIMEN__7,NU_INSTAN_DIMEN__8,NU_INSTAN_DIMEN__9,"
+   "NU_INSTAN_DIMEN__10,NU_INSTAN_DIMEN__11,NU_INSTAN_DIMEN__12,NU_INSTAN_DIMEN__13,"
+   "NU_INSTAN_DIMEN__14,NU_INSTAN_DIMEN__15,NU_INSTAN_DIMEN__16,FC_REFR_SERIE_HIST,"
+   "CD_GRNL_SERIE_HIST,CT_VALOR_SERIE_HIST,NU_FUENTE_INDCA_PERFM,"
+   "FC_GEN_FUENTE_INDCA_PERFM) values (:Indic, :Vision, :Inst1, :Inst2, :Inst3,"
+   ":Inst4, :Inst5, :Inst6, :Inst7, :Inst8, :Inst9, :Inst10, :Inst11, :Inst12,"
+   ":Inst13, :Inst14, :Inst15, :Inst16, :Fc_Refr, :Grnl, :Valor,"
+   ":Fuente, :Fc_Gen); "
+   "exception \n"
+   "when DUP_VAL_ON_INDEX then \n"
+   "update %.*s set CT_VALOR_SERIE_HIST=:Valor,"
+   "NU_FUENTE_INDCA_PERFM=:Fuente, "
+   "FC_GEN_FUENTE_INDCA_PERFM=:Fc_Gen "
+   "where NU_INDCA_PERFM=:Indic and NU_VISION=:Vision and "
+   "NU_INSTAN_DIMEN__1=:Inst1 and NU_INSTAN_DIMEN__2=:Inst2 and "
+   "NU_INSTAN_DIMEN__3=:Inst3 and NU_INSTAN_DIMEN__4=:Inst4 and "
+   "NU_INSTAN_DIMEN__5=:Inst5 and NU_INSTAN_DIMEN__6=:Inst6 and "
+   "NU_INSTAN_DIMEN__7=:Inst7 and NU_INSTAN_DIMEN__8=:Inst8 and "
+   "NU_INSTAN_DIMEN__9=:Inst9 and NU_INSTAN_DIMEN__10=:Inst10 and "
+   "NU_INSTAN_DIMEN__11=:Inst11 and NU_INSTAN_DIMEN__12=:Inst12 and "
+   "NU_INSTAN_DIMEN__13=:Inst13 and NU_INSTAN_DIMEN__14=:Inst14 and "
+   "NU_INSTAN_DIMEN__15=:Inst15 and NU_INSTAN_DIMEN__16=:Inst16 and "
+   "FC_REFR_SERIE_HIST=:Fc_Refr and CD_GRNL_SERIE_HIST=:Grnl; \n"
+   "end;\n";
+
+/*************************************************************************************
+  Actualiza las tablas de serie historica para fuentes de datos del tipo Sistema
+ *************************************************************************************/
+
+static void Atualiza_Serie_Hist_Sist(int Fuente, T_DATE Fc_Gen)
+{
+   T_REG_MOVT Reg_Movt;
+   T_REG_SH Reg_SH;
+   int NIndca, NRegs;
+   int i;
+   T_DATE Last_Date;
+   char Grnl[2], *GrnlArr;
+
+   /* Traendo las granularidades de los indicadores para un vector en memoria */
+   EXEC SQL select max(NU_INDCA_PERFM)
+      into :NIndca
+      from G3_INDCA_PERFM;
+   GrnlArr = calloc(NIndca, sizeof(char));
+   EXEC SQL whenever NOT FOUND continue;
+   for (i = 1; i <= NIndca; i++) {
+      EXEC SQL select CD_GRNL_INDCA_PERFM
+	    into :Grnl
+	    from G3_INDCA_PERFM
+	    where NU_INDCA_PERFM = :i;
+      GrnlArr[i-1] = *Grnl;
+   }
+	 /* antes estaba incluido en el cursor order by FC_REFR_MOVT; */
+      /* hint comentado select + INDEX(S PK_MOVTSH) */ 
+   EXEC SQL declare r_mov cursor for
+      select /*+ INDEX(S IX_MOVTSH01) */ NU_INDCA_PERFM, NU_VISION,
+      NU_INSTAN_DIMEN__1, NU_INSTAN_DIMEN__2, NU_INSTAN_DIMEN__3, NU_INSTAN_DIMEN__4,
+      NU_INSTAN_DIMEN__5, NU_INSTAN_DIMEN__6, NU_INSTAN_DIMEN__7, NU_INSTAN_DIMEN__8,
+      NU_INSTAN_DIMEN__9, NU_INSTAN_DIMEN__10, NU_INSTAN_DIMEN__11, NU_INSTAN_DIMEN__12,
+      NU_INSTAN_DIMEN__13, NU_INSTAN_DIMEN__14, NU_INSTAN_DIMEN__15, NU_INSTAN_DIMEN__16,
+      FC_REFR_MOVT, CT_INDCA_PERFM_MOVT, NU_FUENTE_DATO_MOVT, FC_GEN_MOVT
+	 from G3_MOVT_SERIE_HIST S
+         where NU_FUENTE_DATO_MOVT = :Fuente and
+	       FC_GEN_MOVT = :Fc_Gen;
+
+   EXEC SQL open r_mov;
+   NRegs = 0;
+   strcpy(Last_Date, "");
+
+   /* Procesando los datos de la Fuente */
+   printf("Efectuo la apertura del cursor\n");
+   Reg_SH.Grnl[1] = 0;
+   EXEC SQL whenever NOT FOUND do break;
+   for (;;) {
+      EXEC SQL fetch r_mov into :Reg_Movt;
+
+      memcpy(&Reg_SH, &Reg_Movt, sizeof(Reg_Movt));
+      Reg_SH.Grnl[0] = GrnlArr[Reg_Movt.Indic-1];
+
+      Graba_Reg_SH(&Reg_SH);
+      if (!(++NRegs % 1000)) {
+         EXEC SQL commit;
+         putchar('.');
+      }
+
+   }
+   printf("%d registros procesados\n", NRegs);
+   EXEC SQL close r_mov;
+   EXEC SQL whenever SQLERROR continue;
+   EXEC SQL whenever NOT FOUND continue;
+   EXEC SQL EXECUTE
+   begin
+      G3_Log_Err.Log_Msj('D', :NRegs || ' registros procesados.');
+   end;
+   END-EXEC;
+   free(GrnlArr);
+}
+
+/*****************************************************************************
+ Procedure atualiza_dw
+
+ Actualiza los valores del DW
+ *****************************************************************************/
+
+void atualiza_dw(int Proceso_Completo)
+{
+   T_DATE Fc_Gen;
+   char Tipo_Fuente[2];
+   int Fuente, Todo_Procesado;
+   VARCHAR Nm_Fuente[40];
+   
+   EXEC SQL declare r_fontes CURSOR for
+      select distinct a.NU_FUENTE_INDCA_PERFM, a.FC_GEN_FUENTE_INDCA_PERFM,
+             b.NM_FUENTE_INDCA_PERFM, b.CD_TIPO_ORIG_FUENTE_INDCA
+         from G3_LOG_FUENTE_INDCA_PERFM a, G3_FUENTE_INDCA_PERFM b
+         where a.FC_ATUALIZ_DW is NULL and
+               a.NU_FUENTE_INDCA_PERFM = b.NU_FUENTE_INDCA_PERFM;
+   
+   EXEC SQL open r_fontes;
+
+   EXEC SQL whenever SQLERROR do sql_error("Actualizacion del DW");
+   EXEC SQL whenever NOT FOUND do break;
+   for (;;)   {  /* Para cada fuente de datos con datos en movimiento */
+      EXEC SQL fetch r_fontes into :Fuente, :Fc_Gen, :Nm_Fuente, :Tipo_Fuente;
+
+      EXEC SQL whenever NOT FOUND do sql_error("Actualizacion del DW");
+      printf("Procesando lote de fuente %d, generado en %s\n", Fuente, Fc_Gen);
+      EXEC SQL EXECUTE
+      begin
+         G3_Log_Err.Log_Msj('D', 'Procesando lote de la fuente ' ||
+                            :Fuente || ' generado en ' || :Fc_Gen);
+      end;
+      END-EXEC;
+
+      Todo_Procesado = 1;
+      EXEC SQL whenever NOT FOUND continue;
+      EXEC SQL
+         select 0
+            into :Todo_Procesado
+            from G3_EXTRT_SIG_CTRL
+            where NU_FUENTE_INDCA_PERFM = :Fuente and
+                  FC_GEN_FUENTE_INDCA_PERFM = :Fc_Gen;
+
+      EXEC SQL whenever NOT FOUND do sql_error("Actualizacion del DW");
+      if (Todo_Procesado) {
+         Atualiza_Serie_Hist_Sist(Fuente, Fc_Gen);
+         EXEC SQL
+            update G3_LOG_FUENTE_INDCA_PERFM
+               set FC_ATUALIZ_DW = sysdate
+               where NU_FUENTE_INDCA_PERFM = :Fuente and
+                     FC_GEN_FUENTE_INDCA_PERFM = :Fc_Gen;
+
+         if (Proceso_Completo) {
+            EXEC SQL EXECUTE
+            declare 
+               JobNum number;
+            begin
+               G3_Log_Err.Log_Msj('D', 'Borrando registros...');
+	       dbms_job.submit(JobNum, 'begin borra_movimiento(' ||
+	                       :Fuente || ', ''' || :Fc_Gen || '''); end;');
+               commit;
+            end;
+            END-EXEC;
+         }
+      }
+      else {
+         printf("Lote no procesado. Todavia hay datos rechazados.\n");
+         EXEC SQL EXECUTE
+         begin
+            G3_Log_Err.Log_Msj('D', 'Lote no procesado. Todavia hay datos rechazados.');
+         end;
+         END-EXEC;
+      }
+
+      EXEC SQL EXECUTE
+      begin
+         G3_Log_Err.Log_Msj('D', 'Fin del procesamiento del lote de fuente ' ||
+            :Fuente || ' generado en ' || :Fc_Gen);
+      end;
+      END-EXEC;
+      EXEC SQL commit work;
+   }
+   EXEC SQL close r_fontes;
+
+   EXEC SQL commit work;
+}

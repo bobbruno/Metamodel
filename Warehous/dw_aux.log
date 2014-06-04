@@ -1,0 +1,119 @@
+
+Pro*C/C++: Release 2.2.3.0.0 - Production on Mon Dec 08 19:50:38 1997
+
+Copyright (c) Oracle Corporation 1979, 1996.  All rights reserved.
+
+System default option values taken from: C:\ORAWIN95\pro22\pmscfg.cfg
+
+	 G3_Log_Err.Log_Msj('E', :temp_txt);
+.........1
+(1) PCC-S-02201, identifier 'G3_LOG_ERR.LOG_MSJ' must be declared
+
+	 G3_Log_Err.Log_Msj('E', :temp_txt);
+.........1
+(1) PCC-S-02000, Statement ignored
+
+Semantic error at line 56, column 7, file dw_aux.pc:
+      begin
+......1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+		  G3_Log_Err.Termina_Log;
+..................1
+(1) PCC-S-02201, identifier 'G3_LOG_ERR.TERMINA_LOG' must be declared
+
+		  G3_Log_Err.Termina_Log;
+..................1
+(1) PCC-S-02000, Statement ignored
+
+Semantic error at line 73, column 9, file dw_aux.pc:
+	       begin
+...............1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+	    G3_Log_Err.Termina_Log;
+............1
+(1) PCC-S-02201, identifier 'G3_LOG_ERR.TERMINA_LOG' must be declared
+
+	    G3_Log_Err.Termina_Log;
+............1
+(1) PCC-S-02000, Statement ignored
+
+Semantic error at line 85, column 3, file dw_aux.pc:
+	 begin
+.........1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+         G3_Log_Err.Log_Msj('E', :pos_err || :errmsg);
+.........1
+(1) PCC-S-02201, identifier 'G3_LOG_ERR.LOG_MSJ' must be declared
+
+         G3_Log_Err.Log_Msj('E', :pos_err || :errmsg);
+.........1
+(1) PCC-S-02000, Statement ignored
+
+         G3_Log_Err.Termina_Log;
+.........1
+(1) PCC-S-02201, identifier 'G3_LOG_ERR.TERMINA_LOG' must be declared
+
+         G3_Log_Err.Termina_Log;
+.........1
+(1) PCC-S-02000, Statement ignored
+
+Semantic error at line 418, column 7, file dw_aux.pc:
+      begin
+......1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+      select NM_TABLA_SH,
+......1
+(1) PCC-S-02201, identifier 'G3_TABLA_SH' must be declared
+
+      select NM_TABLA_SH,
+......1
+(1) PCC-S-02000, SQL Statement ignored
+
+Semantic error at line 464, column 7, file dw_aux.pc:
+      select NM_TABLA_SH,
+......1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+      select NU_VISION, count(*)
+......1
+(1) PCC-S-02201, identifier 'G3_TABLA_SH_VISION' must be declared
+
+      select NU_VISION, count(*)
+......1
+(1) PCC-S-02000, SQL Statement ignored
+
+Semantic error at line 505, column 7, file dw_aux.pc:
+      select NU_VISION, count(*)
+......1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+         select NU_TABLA_SH
+.........1
+(1) PCC-S-02201, identifier 'G3_TABLA_SH_VISION' must be declared
+
+         select NU_TABLA_SH
+.........1
+(1) PCC-S-02000, SQL Statement ignored
+
+Semantic error at line 520, column 10, file dw_aux.pc:
+         select NU_TABLA_SH
+.........1
+(1) PCC-S-02346, PL/SQL found semantic errors
+
+	 update G3_INDCA_PERFM set
+................1
+(1) PCC-S-02201, identifier 'G3_INDCA_PERFM' must be declared
+
+	 update G3_INDCA_PERFM set
+................1
+(1) PCC-S-02000, SQL Statement ignored
+
+Semantic error at line 789, column 4, file dw_aux.pc:
+   declare
+...1
+(1) PCC-S-02346, PL/SQL found semantic errors
+

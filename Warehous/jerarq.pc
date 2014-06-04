@@ -1,0 +1,492 @@
+/*****************************************************************************
+ *                                                                           *
+ *                   CONSOLIDACION DEL DATA WAREHOUSE                        *
+ *                                                                           *
+ *             Consolidacion Jerarquica del Data Warehouse                   *
+ *                                                                           *
+ *  Desarrollado por Roberto Bruno Martins - Price Waterhouse                *
+ *  en 09/1996.                                                              *
+ *                                                                           *
+ *****************************************************************************/
+
+#ifndef ORA_PROC
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
+#include <sqlca.h>
+#include <oraca.h>
+#include "dw_aux.h"
+
+/*************************************************************************************
+
+   Acha_Dimensao: Determina la posicion de Dimen dentro de la Vision
+
+ *************************************************************************************/
+
+static int acha_dimensao(int Dimen, T_VISAO Visao)
+{
+   register int i;
+   for (i = 0; Visao[i] != Dimen; i++);
+   return(i);
+}
+
+/************************************************************************************
+
+   Gen_Tab_Temp_Cons: Genera la consolidacion de un nivel para un indicador y una fecha
+
+ *************************************************************************************/
+
+static void Gen_Tab_Temp_Cons(int Indca, T_DATE Fc_Calc, int Visao, int Nivl_Logc,
+                              int Dimen, int PosVisao, char *TabDe, char *MetdCons,
+                              int *DimVis, int Fuente, T_DATE Fc_Gen, char Grnl)
+{
+   register int i;
+   static char aux_sql[8192], temp[512];
+
+   EXEC SQL whenever SQLERROR do sql_error("Consolidacion Jerarquica");
+   strcpy(aux_sql, "create table G3_TEMP_CONS_JRQC(NU_INDCA_PERFM,NU_VISION,\n"
+        "CT_VALOR_SERIE_HIST,NU_INSTAN_DIMEN__1,NU_INSTAN_DIMEN__2,NU_INSTAN_DIMEN__3,\n"
+        "NU_INSTAN_DIMEN__4, NU_INSTAN_DIMEN__5, NU_INSTAN_DIMEN__6, NU_INSTAN_DIMEN__7,"
+        "NU_INSTAN_DIMEN__8, NU_INSTAN_DIMEN__9, NU_INSTAN_DIMEN__10,\n"
+        "NU_INSTAN_DIMEN__11, NU_INSTAN_DIMEN__12, NU_INSTAN_DIMEN__13,\n"
+        "NU_INSTAN_DIMEN__14, NU_INSTAN_DIMEN__15, NU_INSTAN_DIMEN__16,\n"
+        "FC_REFR_SERIE_HIST, CD_GRNL_SERIE_HIST,\n"
+        "NU_FUENTE_INDCA_PERFM, FC_GEN_FUENTE_INDCA_PERFM) \n"
+        "STORAGE(INITIAL 4M NEXT 4M PCTINCREASE 0 MINEXTENTS 5 MAXEXTENTS UNLIMITED) \n"
+        "TABLESPACE DW_TEMP UNRECOVERABLE PARALLEL (DEGREE 4) \n");
+   /* hint anterior + ORDERED INDEX(II PK_INDIND) */
+   sprintf(temp, "as SELECT /*+ ORDERED INDEX(II PK_INDIND) */ "
+              "%d, %d, %s(S.CT_VALOR_SERIE_HIST)", Indca, Visao, MetdCons);
+   strcat(aux_sql, temp);
+
+   /* Generando las columnas NU_INSTAN_DIMEN__xx del INSERT...SELECT */
+   for (i = 0; i < PosVisao; i++) {
+      sprintf(temp, ",S.NU_INSTAN_DIMEN__%d",i+1);
+      strcat(aux_sql, temp);
+   }
+   strcat(aux_sql, ",I.NU_INSTAN_DIMEN");
+   for (i = PosVisao + 1; i < 16; i++) {
+      if (DimVis[i]) {
+         sprintf(temp, ",S.NU_INSTAN_DIMEN__%d",i+1);
+         strcat(aux_sql, temp);
+      }
+      else
+         strcat(aux_sql, ",0");
+   }
+
+   /* Fecha de referencia, granularidad, fuente de datos, fecha de generacion */
+   sprintf(temp, ", to_date('%s'), '%c', %d, to_date('%s')\n", Fc_Calc, Grnl, Fuente, Fc_Gen);
+   strcat(aux_sql, temp);
+
+   /* Generando el FROM */
+   sprintf(temp, " from G3_INSTAN_DIMEN I, G3_INSTAN_DIMEN_INSTAN_DIMEN II, %s S"
+          " where S.NU_INDCA_PERFM = ", TabDe);
+   strcat(aux_sql, temp);
+
+   /* Generando filtros para la consolidacion (WHERE) */
+   sprintf(temp, "%d and S.FC_REFR_SERIE_HIST = '%s' and ", Indca, Fc_Calc);
+   strcat(aux_sql, temp);
+   sprintf(temp, "S.NU_VISION = %d and S.CD_GRNL_SERIE_HIST = '%c' and ",
+         Visao, Grnl);
+   strcat(aux_sql, temp);
+   sprintf(temp, "S.NU_INSTAN_DIMEN__%d = II.NU_INSTAN_DIMEN_HIJO and ",
+         PosVisao + 1);
+   strcat(aux_sql, temp);
+   sprintf(temp, "II.NU_DIMEN_PADRE = %d and ", Dimen);
+   strcat(aux_sql, temp);
+   strcat(aux_sql, "II.NU_INSTAN_DIMEN_PADRE = I.NU_INSTAN_DIMEN and ");
+   sprintf(temp, "I.NU_DIMEN = %d and I.NU_NIVL_LOGC_DIMEN = %d",
+         Dimen, Nivl_Logc);
+   strcat(aux_sql, temp);
+   strcat(aux_sql, " GROUP BY ");
+   for (i = 0; i < 16; i++) {
+      if (i != PosVisao) {
+         if (DimVis[i]) {
+            sprintf(temp, "S.NU_INSTAN_DIMEN__%d,",i+1);
+            strcat(aux_sql, temp);
+         }
+      }
+      else
+         strcat(aux_sql, "I.NU_INSTAN_DIMEN,");
+   }
+   aux_sql[strlen(aux_sql)-1] = 0;
+#ifdef __DEBUG
+   printf("Creando tabla temporal...");
+#endif
+   EXEC SQL EXECUTE IMMEDIATE :aux_sql;
+#ifdef __DEBUG
+   printf("Creada\n");
+#endif
+   EXEC SQL commit;
+   EXEC SQL set transaction use rollback segment R01;
+} /* Gen_Tab_Temp_Cons */
+
+/**************************************************************************************
+
+  consolida_instancias: Consolida las instancias en la vision y nivel especificados
+
+ **************************************************************************************/
+
+static void consolida_instancias(int Dimen, int NivDim,
+                                 int Visao, int PosVisao, int *DimVis)
+{
+   T_DATE Fc_Min, Fc_Max, Fc_Calc, Fc_Gen, Fc_Ult_Atual;
+   T_REG_SH Reg_SH;
+   short Passou, IndMin, IndMax, IndFuen, Primeiro = 1, IndCalc;
+   char aux_sql[8000], Grnl[2];
+   int Indca, Fuente, NIndca, Cont_No_Data = 0;
+   static int HayDat;
+   VARCHAR TabDe[40], MetdCons[10];
+   long Conta_Regs = 0;
+ 
+   EXEC SQL whenever SQLERROR do sql_error("Consolidacion jerarquica");
+   EXEC SQL whenever NOT FOUND do sql_error("Consolidacion jerarquica");
+
+   /* Evaluando cuantos indicadores consolidables hay para esta vision */
+   EXEC SQL
+      select count(*)
+         into :NIndca
+         from G3_INDCA_PERFM
+         where NU_VISION = :Visao and
+               CD_TIPO_INDCA_PERFM != 'CF' and
+               CD_METD_CONS_JRQC != 'SC' and
+               CD_INDCA_ATUAL = '1';
+   if (!NIndca) {
+      printf("La vision %d no tiene indicadores para consolidar\n", Visao);
+      EXEC SQL execute
+	 begin
+	    G3_Log_Err.Log_Msj('D', 'La vision ' || :Visao || ' no tiene indicadores para consolidar');
+	 end;
+      END-EXEC;
+      return;
+   }
+#ifdef __DEBUG
+   printf("Tem %d indicadores\n",NIndca);
+#endif
+
+   printf("Consolidando Nivel %d, Vision %d\n", NivDim, Visao);
+   EXEC SQL execute
+      begin
+         G3_Log_Err.Log_Msj('D', 'Consolidando nivel ' || :NivDim || ', Vision ' || :Visao);
+      end;
+   END-EXEC;
+   /* Para cada indicador consolidable de la vision */
+   EXEC SQL declare r_indca CURSOR FOR
+      select NU_INDCA_PERFM, CD_METD_CONS_JRQC,
+             CD_GRNL_INDCA_PERFM, FC_ULT_ATUAL_INDCA,
+             FC_LIM_INF_INDCA, FC_LIM_SUP_INDCA
+         from G3_INDCA_PERFM
+         where NU_VISION = :Visao and
+               CD_TIPO_INDCA_PERFM != 'CF' and
+               CD_METD_CONS_JRQC != 'SC' and
+               CD_INDCA_ATUAL = '1'
+               order by CD_METD_CONS_JRQC;
+
+   EXEC SQL open r_indca;
+   EXEC SQL whenever NOT FOUND do break;
+   for (;;) {  /* loop r_indca */
+      EXEC SQL fetch r_indca into :Indca, :MetdCons, :Grnl, :Fc_Ult_Atual, :Fc_Min:IndMin, :Fc_Max:IndMax;
+      EXEC SQL whenever NOT FOUND do sql_error("Cons. Jerarquica");
+      printf("\nConsolidando indicador %d, Gran. %c, actualizado en <%s> ", Indca, Grnl[0], Fc_Ult_Atual);
+      EXEC SQL execute
+         begin
+            G3_Log_Err.Log_Msj('D', 'Consolidando indicador ' || :Indca || ',  gran. ' || :Grnl ||
+                               ', actualizado en <' || :Fc_Ult_Atual || '>.');
+         end;
+      END-EXEC;
+
+
+      /* Determinando el rango de fechas a consolidar */
+      if (IndMin == -1 || IndMax == -1) {
+         EXEC SQL
+            select min(FC_REFR_SERIE_HIST),
+                   max(FC_REFR_SERIE_HIST)
+               into :Fc_Min:IndMin, :Fc_Max:IndMax
+               from V_SERIE_HIST_INPUT
+               where NU_INDCA_PERFM = :Indca and
+                     NU_VISION = :Visao and
+                     CD_GRNL_SERIE_HIST = :Grnl and
+                     FC_GEN_FUENTE_INDCA_PERFM >= :Fc_Ult_Atual;
+      }
+      if (IndMin == -1 || IndMax == -1)
+         continue;
+      printf("de <%s> hasta <%s>\n", Fc_Min, Fc_Max);
+      EXEC SQL execute
+         begin
+            G3_Log_Err.Log_Msj('D', 'de <' || :Fc_Min || '> hasta <' || :Fc_Max || '>.');
+         end;
+      END-EXEC;
+      strncpy(Fc_Calc, Fc_Min, 19);
+      Fc_Calc[19] = 0;
+      Passou = 0;
+      do {
+         printf("Para la fecha %s\n", Fc_Calc);
+         EXEC SQL execute
+            begin
+               G3_Log_Err.Log_Msj('D', 'Para la fecha <' || :Fc_Calc || '>.');
+            end;
+         END-EXEC;
+         /* Determinando la tabla de origen */
+#ifdef __DEBUG
+         printf("Dimen: %d, Nivel: %d\n", Dimen, NivDim);
+#endif
+         EXEC SQL EXECUTE
+            declare
+               Nivel SUP_DW.T_NIVL_DIMEN;
+            begin
+               Nivel(1).Nu_Dimen:= :Dimen;
+               select min(NU_NIVL_LOGC_DIMEN)
+                  into Nivel(1).Nu_Nivl
+                  from G3_NIVL_LOGC_DIMEN
+                  where NU_DIMEN = :Dimen and
+                        NU_NIVL_LOGC_DIMEN > :NivDim;
+               :TabDe:= SUP_DW.Nm_Tab_SH(:Fc_Calc, :Visao, Nivel);
+            end;
+         END-EXEC;
+         TabDe.arr[TabDe.len] = 0;
+
+         /* Determinando si hay datos para la fecha de calculo */
+         sprintf(aux_sql, "select 1, NU_FUENTE_INDCA_PERFM from %.*s where "
+               "NU_INDCA_PERFM = %d and NU_VISION = %d and CD_GRNL_SERIE_HIST = '%c' "
+               "and FC_REFR_SERIE_HIST = '%s' and ROWNUM = 1", TabDe.len, TabDe.arr,
+               Indca, Visao, *Grnl, Fc_Calc);
+         HayDat = 0;
+#ifdef __DEBUG
+         printf("%s\n", aux_sql);
+#endif
+         EXEC SQL prepare hay_stmt from :aux_sql;
+         EXEC SQL declare r_dat CURSOR FOR hay_stmt;
+         EXEC SQL open r_dat;
+         EXEC SQL whenever NOT FOUND continue;
+         EXEC SQL fetch r_dat into :HayDat, :Fuente:IndFuen;
+
+         /* Hay datos para esta fecha ? */
+         if (sqlca.sqlcode == 0 && HayDat) {
+            Cont_No_Data = 0;
+#ifdef __DEBUG
+            printf("Hay datos para %s\n", Fc_Calc);
+#endif
+            EXEC SQL SELECT sysdate into :Fc_Gen from DUAL;
+            EXEC SQL close r_dat;
+
+            TabDe.arr[TabDe.len] = 0; MetdCons.arr[MetdCons.len] = 0;
+
+            Gen_Tab_Temp_Cons(Indca, Fc_Calc, Visao, NivDim, Dimen, PosVisao, 
+               (char *)TabDe.arr, (char *)MetdCons.arr, DimVis, Fuente, Fc_Gen, *Grnl);
+
+            /* Este DECLARE TABLE es necesario porque G3_TEMP_CONS_JRQC no existe en
+               el momento de la compilacion. */
+            EXEC SQL
+               DECLARE G3_TEMP_CONS_JRQC TABLE(
+                    NU_INDCA_PERFM number,
+                    NU_VISION number,
+                    CT_VALOR_SERIE_HIST number,
+                    NU_INSTAN_DIMEN__1 number,
+                    NU_INSTAN_DIMEN__2 number,
+                    NU_INSTAN_DIMEN__3 number,
+                    NU_INSTAN_DIMEN__4 number,
+                    NU_INSTAN_DIMEN__5 number,
+                    NU_INSTAN_DIMEN__6 number,
+                    NU_INSTAN_DIMEN__7 number,
+                    NU_INSTAN_DIMEN__8 number,
+                    NU_INSTAN_DIMEN__9 number,
+                    NU_INSTAN_DIMEN__10 number,
+                    NU_INSTAN_DIMEN__11 number,
+                    NU_INSTAN_DIMEN__12 number,
+                    NU_INSTAN_DIMEN__13 number,
+                    NU_INSTAN_DIMEN__14 number,
+                    NU_INSTAN_DIMEN__15 number,
+                    NU_INSTAN_DIMEN__16 number,
+                    FC_REFR_SERIE_HIST char(19),
+                    CD_GRNL_SERIE_HIST char(1),
+                    NU_FUENTE_INDCA_PERFM number,
+                    FC_GEN_FUENTE_INDCA_PERFM char(19));
+
+            EXEC SQL declare r_Consol CURSOR FOR
+               select NU_INDCA_PERFM, NU_VISION, NU_INSTAN_DIMEN__1,
+                      NU_INSTAN_DIMEN__2, NU_INSTAN_DIMEN__3, NU_INSTAN_DIMEN__4,
+                      NU_INSTAN_DIMEN__5, NU_INSTAN_DIMEN__6, NU_INSTAN_DIMEN__7,
+                      NU_INSTAN_DIMEN__8, NU_INSTAN_DIMEN__9, NU_INSTAN_DIMEN__10,
+                      NU_INSTAN_DIMEN__11, NU_INSTAN_DIMEN__12, NU_INSTAN_DIMEN__13,
+                      NU_INSTAN_DIMEN__14, NU_INSTAN_DIMEN__15, NU_INSTAN_DIMEN__16,
+                      FC_REFR_SERIE_HIST, CT_VALOR_SERIE_HIST, NU_FUENTE_INDCA_PERFM,
+                      FC_GEN_FUENTE_INDCA_PERFM, CD_GRNL_SERIE_HIST
+                  from G3_TEMP_CONS_JRQC;
+            EXEC SQL open r_Consol;
+            EXEC SQL whenever NOT FOUND do break;
+            for (;;) {
+               EXEC SQL fetch r_Consol into :Reg_SH;
+               Graba_Reg_SH(&Reg_SH);
+	       Conta_Regs++;
+            }
+            EXEC SQL close r_Consol;
+            EXEC SQL drop table G3_TEMP_CONS_JRQC;
+         }
+         else {
+            Cont_No_Data++;
+            EXEC SQL close r_dat;
+         }
+
+         if (Cont_No_Data > 10) {
+            Cont_No_Data = 0;
+            sprintf(aux_sql, "select min(FC_REFR_SERIE_HIST) from %.*s where "
+                  "NU_INDCA_PERFM = %d and NU_VISION = %d and CD_GRNL_SERIE_HIST = '%c' "
+                  "and FC_REFR_SERIE_HIST > '%s'", TabDe.len, TabDe.arr,
+                  Indca, Visao, *Grnl, Fc_Calc);
+            HayDat = 0;
+            EXEC SQL prepare next_stmt from :aux_sql;
+            EXEC SQL declare r_fecha CURSOR FOR next_stmt;
+            EXEC SQL open r_fecha;
+            EXEC SQL whenever NOT FOUND continue;
+            EXEC SQL fetch r_fecha into :Fc_Calc:IndCalc;
+            if ((sqlca.sqlcode == -1403) ||
+                (IndCalc == -1))
+               Passou = 1;
+            EXEC SQL close r_fecha;
+         }
+         else {
+            EXEC SQL EXECUTE
+               begin
+                  if :Grnl = 'D' then
+                     :Fc_Calc:= to_date(:Fc_Calc) + 1;
+                  elsif :Grnl = 'S' then
+                     :Fc_Calc:= to_date(:Fc_Calc) + 7;
+                  elsif :Grnl = 'M' then
+                     :Fc_Calc:= add_months(to_date(:Fc_Calc), 1);
+                  end if;
+                  if to_date(:Fc_Calc) > to_date(:Fc_Max) then
+                     :Passou:= 1;
+                  end if;
+                  commit;
+                  set transaction use rollback segment R01;
+               end;
+            END-EXEC;
+         }
+         Fc_Calc[19] = 0;
+      } while (!Passou);
+   }  /* loop r_indca */
+   EXEC SQL close r_indca;
+}   /* consolida_instancias */
+
+/*************************************************************************************
+
+  cons_jerarq: rutina principal de la consolidacion jerarquica.
+
+ *************************************************************************************/
+void cons_jerarq()
+{
+   int Dimen, MaxNivl, MinNivl, NivDim, Visao, PosVisao;
+   T_VISAO DimVis;
+
+   EXEC SQL set transaction use rollback segment R01;
+   EXEC SQL whenever SQLERROR do sql_error("Cons. Jerarq");
+   EXEC SQL whenever NOT FOUND do sql_error("Cons. Jerarq");
+
+#ifdef __DEBUG
+   printf("Entrando en CNJRQ\n");
+#endif
+
+   /* Borrando los objetos auxiliares que puedan estar creados */
+   EXEC SQL whenever SQLERROR continue;
+   EXEC SQL whenever NOT FOUND continue;
+   EXEC SQL drop table G3_TEMP_CONS_JRQC;
+
+   EXEC SQL whenever SQLERROR do sql_error("Cons. Jerarq");
+   EXEC SQL whenever NOT FOUND do sql_error("Cons. Jerarq");
+   EXEC SQL declare r_dimen CURSOR FOR
+      select NU_DIMEN from G3_DIMEN
+         where CD_CONS_JRQC = '1';
+
+   EXEC SQL open r_dimen;
+   EXEC SQL whenever NOT FOUND do break;
+
+   for (;;) {    /* Para cada dimension a consolidar */
+      EXEC SQL fetch r_dimen into :Dimen;
+      EXEC SQL select nvl(max(NU_NIVL_LOGC_DIMEN), 0)
+         into :MaxNivl
+         from G3_NIVL_LOGC_DIMEN
+         where NU_DIMEN = :Dimen;
+
+      EXEC SQL select nvl(min(NU_NIVL_LOGC_MIN), 0)
+         into :MinNivl
+         from G3_BASE_CNST_DIMEN
+         where NU_DIMEN = :Dimen;
+
+#ifdef __DEBUG
+      printf("Procesando dimension %d, niveles %d a %d\n", Dimen, MinNivl, MaxNivl);
+#endif
+      EXEC SQL declare r_visao CURSOR FOR
+         select NU_VISION, NU_DIMEN__1, NU_DIMEN__2,
+                NU_DIMEN__3, NU_DIMEN__4, NU_DIMEN__5,
+                NU_DIMEN__6, NU_DIMEN__7, NU_DIMEN__8,
+                NU_DIMEN__9, NU_DIMEN__10, NU_DIMEN__11,
+                NU_DIMEN__12, NU_DIMEN__13, NU_DIMEN__14,
+                NU_DIMEN__15, NU_DIMEN__16 
+            from G3_VISION
+            where (NU_DIMEN__1 = :Dimen) or
+                  (NU_DIMEN__2 = :Dimen) or
+                  (NU_DIMEN__3 = :Dimen) or
+                  (NU_DIMEN__4 = :Dimen) or
+                  (NU_DIMEN__5 = :Dimen) or
+                  (NU_DIMEN__6 = :Dimen) or
+                  (NU_DIMEN__7 = :Dimen) or
+                  (NU_DIMEN__8 = :Dimen) or
+                  (NU_DIMEN__9 = :Dimen) or
+                  (NU_DIMEN__10 = :Dimen) or
+                  (NU_DIMEN__11 = :Dimen) or
+                  (NU_DIMEN__12 = :Dimen) or
+                  (NU_DIMEN__13 = :Dimen) or
+                  (NU_DIMEN__14 = :Dimen) or
+                  (NU_DIMEN__15 = :Dimen) or
+                  (NU_DIMEN__16 = :Dimen);
+
+      /* Cursor para recorrer los niveles logicos de cada dimension */
+      EXEC SQL declare r_nivel CURSOR FOR
+         select NU_NIVL_LOGC_DIMEN from G3_NIVL_LOGC_DIMEN
+            where NU_NIVL_LOGC_DIMEN < :MaxNivl and
+                  NU_NIVL_LOGC_DIMEN >= :MinNivl and
+                  NU_DIMEN = :Dimen
+            order by NU_NIVL_LOGC_DIMEN DESC; 
+
+      EXEC SQL open r_visao;
+      EXEC SQL whenever NOT FOUND do break;
+
+      /* Para cada Vision */
+      for (;;) {
+         EXEC SQL fetch r_visao into
+            :Visao, :DimVis[0], :DimVis[1], :DimVis[2],
+            :DimVis[3], :DimVis[4], :DimVis[5], :DimVis[6],
+            :DimVis[7], :DimVis[8], :DimVis[9], :DimVis[10],
+            :DimVis[11], :DimVis[12], :DimVis[13], :DimVis[14],
+            :DimVis[15];
+
+#ifdef __DEBUG
+         printf("Vision %d\n", Visao);
+#endif
+         PosVisao = acha_dimensao(Dimen, DimVis);
+
+         EXEC SQL open r_nivel;
+         EXEC SQL whenever NOT FOUND do break;
+
+         for (;;) {  /* Para cada nivel de la dimension */
+            EXEC SQL fetch r_nivel into :NivDim;
+#ifdef __DEBUG
+            printf("Nivel %d\n", NivDim);
+#endif
+            consolida_instancias(Dimen, NivDim, Visao, PosVisao, DimVis);
+         } /* Loop niveles */
+         EXEC SQL close r_nivel;
+         EXEC SQL commit;
+         EXEC SQL set transaction use rollback segment R01;
+      }  
+      EXEC SQL close r_visao;
+      EXEC SQL commit;
+      EXEC SQL set transaction use rollback segment R01;
+   }  /* Loop dimensiones */
+
+   EXEC SQL close r_dimen;
+
+   EXEC SQL whenever NOT FOUND do sql_error("Cons. Jerarq.");
+}
